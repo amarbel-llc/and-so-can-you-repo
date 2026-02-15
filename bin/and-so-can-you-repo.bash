@@ -22,7 +22,7 @@ generate_file_if_missing() {
   fi
 
   mkdir -p "$(dirname "$filepath")"
-  echo "$content" > "$filepath"
+  echo "$content" >"$filepath"
   gum log --level info "Created $filepath"
   return 0
 }
@@ -34,10 +34,10 @@ apply_placeholders() {
   local nix_name
   nix_name="$(nix_safe_name "$name")"
 
-  echo "$content" \
-    | sed "s/__NAME__/$name/g" \
-    | sed "s/__DESCRIPTION__/$description/g" \
-    | sed "s/__NIX_NAME__/$nix_name/g"
+  echo "$content" |
+    sed "s/__NAME__/$name/g" |
+    sed "s/__DESCRIPTION__/$description/g" |
+    sed "s/__NIX_NAME__/$nix_name/g"
 }
 
 # --- Templates ---
@@ -610,6 +610,9 @@ main() {
 
   # Step 1: Clone or init
   local repo_dir name
+  local create_github=false
+  local github_owner=""
+  local github_visibility=""
 
   if gum confirm "Clone an existing repository?"; then
     local url
@@ -643,6 +646,33 @@ main() {
     if [[ -d "$repo_dir" ]]; then
       gum log --level error "$repo_dir already exists"
       exit 1
+    fi
+
+    if gum confirm "Create a GitHub repository?"; then
+      create_github=true
+
+      local orgs
+      orgs="$(gh api user/orgs --jq '.[].login' 2>/dev/null || true)"
+
+      local gh_user
+      gh_user="$(gh api user --jq '.login' 2>/dev/null || true)"
+
+      if [[ -z "$gh_user" ]]; then
+        gum log --level error "Not authenticated with gh. Run 'gh auth login' first."
+        exit 1
+      fi
+
+      local choices="$gh_user (personal)"
+      if [[ -n "$orgs" ]]; then
+        while IFS= read -r org; do
+          choices="$choices"$'\n'"$org"
+        done <<<"$orgs"
+      fi
+
+      github_owner="$(echo "$choices" | gum choose --header "GitHub owner:")"
+      github_owner="${github_owner% (personal)}"
+
+      github_visibility="$(gum choose --header "Visibility:" "private" "public")"
     fi
 
     mkdir -p "$repo_dir"
@@ -751,15 +781,19 @@ main() {
 
   case "$lang" in
     go)
+      local go_module_owner="$github_owner"
+      if [[ -z "$go_module_owner" ]]; then
+        go_module_owner="friedenberg"
+      fi
       gum log --level info "Initializing Go module..."
-      nix develop --command bash -c "go mod init github.com/friedenberg/$name && gomod2nix" 2>&1 \
-        | while IFS= read -r line; do gum log --level debug "$line"; done
+      nix develop --command bash -c "go mod init github.com/$go_module_owner/$name && gomod2nix" 2>&1 |
+        while IFS= read -r line; do gum log --level debug "$line"; done
       git add -A
       ;;
     rust)
       gum log --level info "Generating Cargo.lock..."
-      nix develop --command cargo generate-lockfile 2>&1 \
-        | while IFS= read -r line; do gum log --level debug "$line"; done
+      nix develop --command cargo generate-lockfile 2>&1 |
+        while IFS= read -r line; do gum log --level debug "$line"; done
       git add -A
       ;;
     shell)
@@ -767,21 +801,49 @@ main() {
       ;;
   esac
 
-  # Step 6: Summary
+  # Step 6: Create GitHub repo
+  if [[ "$create_github" == "true" ]]; then
+    gum log --level info "Creating GitHub repository $github_owner/$name..."
+
+    local gh_args=(
+      "$github_owner/$name"
+      "--$github_visibility"
+      "--source" "$repo_dir"
+      "--description" "$description"
+    )
+
+    gum spin --title "Creating GitHub repo..." -- \
+      gh repo create "${gh_args[@]}"
+
+    gum log --level info "Created GitHub repo: $github_owner/$name"
+  fi
+
+  # Step 7: Summary
+  local summary_lines=(
+    "Project '$name' bootstrapped successfully!"
+    ""
+    "Location: $repo_dir"
+    "Language: $lang"
+    "Description: $description"
+  )
+
+  if [[ "$create_github" == "true" ]]; then
+    summary_lines+=("GitHub: $github_owner/$name ($github_visibility)")
+  fi
+
+  summary_lines+=(
+    ""
+    "Next steps:"
+    "  cd $repo_dir"
+    "  just build"
+  )
+
   echo ""
   gum style \
     --border rounded \
     --padding "1 2" \
     --foreground 82 \
-    "Project '$name' bootstrapped successfully!" \
-    "" \
-    "Location: $repo_dir" \
-    "Language: $lang" \
-    "Description: $description" \
-    "" \
-    "Next steps:" \
-    "  cd $repo_dir" \
-    "  just build"
+    "${summary_lines[@]}"
 }
 
 main "$@"

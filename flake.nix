@@ -30,6 +30,7 @@
         });
         buildInputs = with pkgs; [
           gum
+          gh
         ];
       in
       {
@@ -44,6 +45,7 @@
           packages = with pkgs; [
             just
             gum
+            gh
           ];
 
           inputsFrom = [
